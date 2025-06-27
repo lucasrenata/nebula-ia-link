@@ -5,7 +5,8 @@ import { toast } from '@/hooks/use-toast';
 const WEBHOOK_URL = 'https://nwh.parceriacomia.com.br/webhook/receber-mensagem';
 const STORAGE_KEY = 'parceriaIA_chatHistory';
 const POLLING_INTERVAL = 2000;
-const MAX_POLLING_TIME = 60000;
+const MAX_POLLING_TIME = 120000; // Aumentado para 120 segundos
+const INITIAL_TIMEOUT = 10000; // Timeout de 10s para requisição inicial
 
 interface WebhookResponse {
   status: 'pending' | 'completed';
@@ -18,12 +19,6 @@ export const useChat = () => {
     isLoading: false,
     error: null
   });
-
-  // Helper para verificar resposta JSON
-  const isJSONResponse = (res: Response) => {
-    const contentType = res.headers.get('content-type');
-    return contentType?.includes('application/json');
-  };
 
   // Carregar histórico
   useEffect(() => {
@@ -78,25 +73,18 @@ export const useChat = () => {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
 
-        // Verificação robusta de JSON
-        if (isJSONResponse(response)) {
-          const data: WebhookResponse = await response.json();
-          if (data.status === 'completed' && data.response) {
-            return data.response;
-          }
-        } else {
-          const textData = await response.text();
-          console.error('Resposta não-JSON:', textData);
-          throw new Error('Formato de resposta inválido');
+        const data: WebhookResponse = await response.json();
+        if (data.status === 'completed' && data.response) {
+          return data.response;
         }
-
+        
         await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL));
       } catch (error) {
         console.error('Falha no polling:', error);
         await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL));
       }
     }
-    throw new Error('Timeout: Resposta não recebida em 60 segundos');
+    throw new Error('Timeout: Resposta não recebida em 120 segundos');
   }, []);
 
   const sendMessage = useCallback(async (text: string) => {
@@ -114,7 +102,10 @@ export const useChat = () => {
     try {
       const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
       
-      // Enviar mensagem
+      // Enviar mensagem com timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), INITIAL_TIMEOUT);
+      
       const initialResponse = await fetch(WEBHOOK_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -122,69 +113,51 @@ export const useChat = () => {
           action: "send",
           message: text,
           requestId: requestId
-        })
+        }),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
 
-      let initialData: WebhookResponse | null = null;
-      
-      // Tratamento de resposta inicial
-      if (initialResponse.ok) {
-        if (isJSONResponse(initialResponse)) {
-          initialData = await initialResponse.json();
-        } else {
-          const textData = await initialResponse.text();
-          console.warn('Resposta não-JSON:', textData);
-          initialData = { status: 'pending' };
-        }
-      } else {
+      if (!initialResponse.ok) {
         throw new Error(`Erro HTTP: ${initialResponse.status}`);
       }
 
-      // Verificar resposta imediata
-      if (initialData?.status === 'completed' && initialData.response) {
-        addMessage({
-          text: initialData.response,
-          sender: 'ia',
-          timestamp: new Date().toISOString()
-        });
-      } else {
-        // Polling para resposta assíncrona
-        try {
-          const aiResponse = await pollForResponse(requestId);
-          addMessage({
-            text: aiResponse,
-            sender: 'ia',
-            timestamp: new Date().toISOString()
-          });
-        } catch (pollError) {
-          console.warn('Falha no polling, usando fallback');
-          const fallbackResponse = initialData?.response || 
-            `Sua mensagem foi recebida mas houve timeout. RequestId: ${requestId}. Tente novamente.`;
-          
-          addMessage({
-            text: fallbackResponse,
-            sender: 'ia',
-            timestamp: new Date().toISOString()
-          });
-        }
-      }
+      // Processar resposta assíncrona
+      const aiResponse = await pollForResponse(requestId);
+      addMessage({
+        text: aiResponse,
+        sender: 'ia',
+        timestamp: new Date().toISOString()
+      });
 
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'Erro desconhecido';
+      let errorMessage = '';
+      let fallbackResponse = '';
+
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          errorMessage = 'Timeout: O servidor não respondeu em 10 segundos';
+          fallbackResponse = `Sua mensagem foi recebida mas ocorreu timeout na resposta. ID: ${requestId}. Por favor, tente novamente.`;
+        } else {
+          errorMessage = `Erro de conexão: ${error.message}`;
+          fallbackResponse = `(Erro) Não foi possível conectar ao servidor. Detalhes: ${error.message}`;
+        }
+      } else {
+        errorMessage = 'Erro de conexão desconhecido.';
+        fallbackResponse = '(Erro) Ocorreu um erro inesperado ao processar sua mensagem';
+      }
+
       toast({
         title: "Erro de Conexão",
-        description: `Detalhes: ${errorMsg}`,
+        description: errorMessage,
         variant: "destructive"
       });
 
-      // Mensagem simulada de erro
-      setTimeout(() => {
-        addMessage({
-          text: `(Erro) Não foi possível conectar ao servidor. Detalhes: ${errorMsg}`,
-          sender: 'ia',
-          timestamp: new Date().toISOString()
-        });
-      }, 1500);
+      addMessage({
+        text: fallbackResponse,
+        sender: 'ia',
+        timestamp: new Date().toISOString()
+      });
     } finally {
       setState(prev => ({ ...prev, isLoading: false }));
     }
