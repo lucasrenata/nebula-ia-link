@@ -1,12 +1,17 @@
-
 import { useState, useCallback, useEffect } from 'react';
 import { ChatMessage, ChatState } from '@/types/chat';
 import { toast } from '@/hooks/use-toast';
 
 const WEBHOOK_URL = 'https://nwh.parceriacomia.com.br/webhook/receber-mensagem';
 const STORAGE_KEY = 'parceriaIA_chatHistory';
-const POLLING_INTERVAL = 2000; // 2 segundos
-const MAX_POLLING_TIME = 60000; // 60 segundos
+const POLLING_INTERVAL = 2000;
+const MAX_POLLING_TIME = 60000;
+
+// Interface para resposta do webhook
+interface WebhookResponse {
+  status: 'pending' | 'completed';
+  response?: string;
+}
 
 export const useChat = () => {
   const [state, setState] = useState<ChatState>({
@@ -15,7 +20,13 @@ export const useChat = () => {
     error: null
   });
 
-  // Load chat history from localStorage
+  // Helper para verificar se a resposta é JSON
+  const isJSONResponse = (res: Response) => {
+    const contentType = res.headers.get('content-type');
+    return contentType?.includes('application/json');
+  };
+
+  // Carregar histórico do localStorage
   useEffect(() => {
     const savedHistory = localStorage.getItem(STORAGE_KEY);
     if (savedHistory) {
@@ -26,7 +37,6 @@ export const useChat = () => {
         console.error('Error loading chat history:', error);
       }
     } else {
-      // Initial AI message
       const initialMessage: ChatMessage = {
         id: '1',
         text: 'Olá! Sou sua interface de comunicação com a IA. Como posso ajudar hoje?',
@@ -37,7 +47,7 @@ export const useChat = () => {
     }
   }, []);
 
-  // Save to localStorage whenever messages change
+  // Salvar mensagens no localStorage
   useEffect(() => {
     if (state.messages.length > 0) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state.messages));
@@ -65,19 +75,22 @@ export const useChat = () => {
       try {
         const response = await fetch(`${WEBHOOK_URL}?requestId=${requestId}&action=poll`, {
           method: 'GET',
-          headers: {
-            'Content-Type': 'application/json'
-          }
+          headers: { 'Content-Type': 'application/json' }
         });
 
         if (response.ok) {
-          const data = await response.json();
-          if (data.response && data.status === 'completed') {
-            return data.response;
+          if (isJSONResponse(response)) {
+            const data: WebhookResponse = await response.json();
+            if (data.response && data.status === 'completed') {
+              return data.response;
+            }
+          } else {
+            const textData = await response.text();
+            console.error('Resposta não é JSON:', textData);
+            throw new Error('Formato de resposta inválido: esperado JSON');
           }
         }
         
-        // Aguarda antes da próxima tentativa
         await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL));
       } catch (error) {
         console.log('Polling attempt failed, retrying...', error);
@@ -91,7 +104,7 @@ export const useChat = () => {
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || state.isLoading) return;
 
-    // Add user message
+    // Adicionar mensagem do usuário
     addMessage({
       text: text.trim(),
       sender: 'user',
@@ -106,9 +119,7 @@ export const useChat = () => {
       // Enviar mensagem inicial
       const initialResponse = await fetch(WEBHOOK_URL, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: "send",
           message: text,
@@ -116,29 +127,33 @@ export const useChat = () => {
         })
       });
 
-      if (!initialResponse.ok) {
-        throw new Error(`Erro na requisição inicial: ${initialResponse.statusText}`);
+      let initialData: WebhookResponse | null = null;
+      
+      if (initialResponse.ok) {
+        if (isJSONResponse(initialResponse)) {
+          initialData = await initialResponse.json();
+        } else {
+          const textData = await initialResponse.text();
+          console.warn('Resposta inicial não é JSON:', textData);
+          initialData = { status: 'pending' };
+        }
+      } else {
+        throw new Error(`Erro na requisição: ${initialResponse.statusText}`);
       }
 
-      // Fazer polling para aguardar a resposta
-      console.log(`Aguardando resposta do webhook para requestId: ${requestId}`);
-      
+      // Fazer polling para a resposta completa
       try {
         const aiResponse = await pollForResponse(requestId);
-        
-        // Add AI response
         addMessage({
           text: aiResponse,
           sender: 'ia',
           timestamp: new Date().toISOString()
         });
-
       } catch (pollError) {
-        console.warn('Polling failed, trying direct response from initial request...');
+        console.warn('Polling failed, using fallback response');
         
-        // Fallback: tentar obter resposta do response inicial
-        const initialData = await initialResponse.json().catch(() => ({}));
-        const fallbackResponse = initialData.response || 
+        // Fallback: usar resposta inicial se disponível
+        const fallbackResponse = initialData?.response || 
           `Sua mensagem foi recebida mas houve timeout na resposta. RequestId: ${requestId}. Por favor, tente novamente.`;
         
         addMessage({
@@ -174,7 +189,6 @@ export const useChat = () => {
         variant: "destructive"
       });
 
-      // Add simulated response after a delay
       setTimeout(() => {
         addMessage({
           text: simulatedResponse,
