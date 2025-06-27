@@ -1,17 +1,11 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { ChatMessage, ChatState } from '@/types/chat';
 import { toast } from '@/hooks/use-toast';
+import { io, Socket } from 'socket.io-client';
 
 const WEBHOOK_URL = 'https://nwh.parceriacomia.com.br/webhook/receber-mensagem';
+const SOCKET_URL = 'wss://seu-app.up.railway.app'; // ⚠️ SUBSTITUA POR SUA URL DO RAILWAY
 const STORAGE_KEY = 'parceriaIA_chatHistory';
-const POLLING_INTERVAL = 2000;
-const MAX_POLLING_TIME = 120000; // Aumentado para 120 segundos
-const INITIAL_TIMEOUT = 30000; // Timeout de 10s para requisição inicial
-
-interface WebhookResponse {
-  status: 'pending' | 'completed';
-  response?: string;
-}
 
 export const useChat = () => {
   const [state, setState] = useState<ChatState>({
@@ -19,6 +13,8 @@ export const useChat = () => {
     isLoading: false,
     error: null
   });
+  
+  const socketRef = useRef<Socket | null>(null);
 
   // Carregar histórico
   useEffect(() => {
@@ -41,6 +37,38 @@ export const useChat = () => {
         }]
       }));
     }
+
+    // Inicializar WebSocket
+    socketRef.current = io(SOCKET_URL, {
+      transports: ['websocket'],
+    });
+
+    // Configurar listeners do socket
+    socketRef.current.on('connect', () => {
+      console.log('Conectado ao servidor WebSocket');
+    });
+
+    socketRef.current.on('webhook_response', (data: { requestId: string; response: string }) => {
+      console.log('Resposta recebida via WebSocket:', data);
+      
+      addMessage({
+        text: data.response,
+        sender: 'ia',
+        timestamp: new Date().toISOString()
+      });
+      
+      setState(prev => ({ ...prev, isLoading: false }));
+    });
+
+    socketRef.current.on('connect_error', (err) => {
+      console.error('Erro de conexão WebSocket:', err);
+    });
+
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+      }
+    };
   }, []);
 
   // Salvar mensagens
@@ -59,37 +87,11 @@ export const useChat = () => {
     return newMessage;
   }, []);
 
-  const pollForResponse = useCallback(async (requestId: string): Promise<string> => {
-    const startTime = Date.now();
-    
-    while (Date.now() - startTime < MAX_POLLING_TIME) {
-      try {
-        const response = await fetch(`${WEBHOOK_URL}?requestId=${requestId}&action=poll`, {
-          method: 'GET',
-          headers: { 'Content-Type': 'application/json' }
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data: WebhookResponse = await response.json();
-        if (data.status === 'completed' && data.response) {
-          return data.response;
-        }
-        
-        await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL));
-      } catch (error) {
-        console.error('Falha no polling:', error);
-        await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL));
-      }
-    }
-    throw new Error('Timeout: Resposta não recebida em 120 segundos');
-  }, []);
-
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || state.isLoading) return;
 
+    const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+    
     // Adicionar mensagem do usuário
     addMessage({
       text: text.trim(),
@@ -100,68 +102,46 @@ export const useChat = () => {
     setState(prev => ({ ...prev, isLoading: true, error: null }));
 
     try {
-      const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+      // Registrar este requestId no WebSocket
+      if (socketRef.current) {
+        socketRef.current.emit('register_request', { requestId });
+      }
       
-      // Enviar mensagem com timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), INITIAL_TIMEOUT);
-      
-      const initialResponse = await fetch(WEBHOOK_URL, {
+      // Enviar mensagem para webhook
+      const response = await fetch(WEBHOOK_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: "send",
           message: text,
           requestId: requestId
-        }),
-        signal: controller.signal
+        })
       });
-      clearTimeout(timeoutId);
 
-      if (!initialResponse.ok) {
-        throw new Error(`Erro HTTP: ${initialResponse.status}`);
+      if (!response.ok) {
+        throw new Error(`Erro HTTP: ${response.status}`);
       }
 
-      // Processar resposta assíncrona
-      const aiResponse = await pollForResponse(requestId);
-      addMessage({
-        text: aiResponse,
-        sender: 'ia',
-        timestamp: new Date().toISOString()
-      });
+      console.log(`Mensagem enviada com requestId: ${requestId}`);
 
     } catch (error) {
-      let errorMessage = '';
-      let fallbackResponse = '';
-
-      if (error instanceof Error) {
-        if (error.name === 'AbortError') {
-          errorMessage = 'Timeout: O servidor não respondeu em 10 segundos';
-          fallbackResponse = `Sua mensagem foi recebida mas ocorreu timeout na resposta. ID: ${requestId}. Por favor, tente novamente.`;
-        } else {
-          errorMessage = `Erro de conexão: ${error.message}`;
-          fallbackResponse = `(Erro) Não foi possível conectar ao servidor. Detalhes: ${error.message}`;
-        }
-      } else {
-        errorMessage = 'Erro de conexão desconhecido.';
-        fallbackResponse = '(Erro) Ocorreu um erro inesperado ao processar sua mensagem';
-      }
-
+      const errorMsg = error instanceof Error ? error.message : 'Erro desconhecido';
+      
       toast({
         title: "Erro de Conexão",
-        description: errorMessage,
+        description: `Erro: ${errorMsg}`,
         variant: "destructive"
       });
 
       addMessage({
-        text: fallbackResponse,
+        text: `⚠️ Erro ao enviar mensagem: ${errorMsg}`,
         sender: 'ia',
         timestamp: new Date().toISOString()
       });
-    } finally {
+
       setState(prev => ({ ...prev, isLoading: false }));
     }
-  }, [state.isLoading, addMessage, pollForResponse]);
+  }, [state.isLoading, addMessage]);
 
   return {
     messages: state.messages,
