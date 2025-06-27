@@ -4,7 +4,7 @@ import { toast } from '@/hooks/use-toast';
 import { io, Socket } from 'socket.io-client';
 
 const WEBHOOK_URL = 'https://nwh.parceriacomia.com.br/webhook/receber-mensagem';
-const SOCKET_URL = 'wss://seu-app.up.railway.app'; // ⚠️ SUBSTITUA POR SUA URL DO RAILWAY
+const SOCKET_URL = 'wss://nebula-ia-link-production.up.railway.app'; // Corrigido para wss://
 const STORAGE_KEY = 'parceriaIA_chatHistory';
 
 export const useChat = () => {
@@ -38,9 +38,12 @@ export const useChat = () => {
       }));
     }
 
-    // Inicializar WebSocket
+    // Inicializar WebSocket com configurações corretas
     socketRef.current = io(SOCKET_URL, {
       transports: ['websocket'],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
     });
 
     // Configurar listeners do socket
@@ -62,6 +65,11 @@ export const useChat = () => {
 
     socketRef.current.on('connect_error', (err) => {
       console.error('Erro de conexão WebSocket:', err);
+      toast({
+        title: "Erro de Conexão",
+        description: "Não foi possível conectar ao servidor em tempo real",
+        variant: "destructive"
+      });
     });
 
     return () => {
@@ -103,8 +111,11 @@ export const useChat = () => {
 
     try {
       // Registrar este requestId no WebSocket
-      if (socketRef.current) {
+      if (socketRef.current?.connected) {
         socketRef.current.emit('register_request', { requestId });
+      } else {
+        console.warn('WebSocket não conectado, tentando reconectar...');
+        socketRef.current?.connect();
       }
       
       // Enviar mensagem para webhook
@@ -145,8 +156,4 @@ export const useChat = () => {
 
   return {
     messages: state.messages,
-    isLoading: state.isLoading,
-    error: state.error,
-    sendMessage
-  };
-};
+    isLoading: state.is
