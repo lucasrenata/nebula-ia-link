@@ -3,7 +3,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { ChatMessage, ChatState } from '@/types/chat';
 import { toast } from '@/hooks/use-toast';
 
-const WEBHOOK_URL = 'https://n8n.parceriacomia.com.br/webhook-test/receber-mensagem';
+const WEBHOOK_URL = 'https://nwh.parceriacomia.com.br/webhook/receber-mensagem';
 const STORAGE_KEY = 'parceriaIA_chatHistory';
 const POLLING_INTERVAL = 2000; // 2 segundos
 const MAX_POLLING_TIME = 60000; // 60 segundos
