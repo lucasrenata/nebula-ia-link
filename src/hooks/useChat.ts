@@ -6,7 +6,7 @@ const WEBHOOK_URL = 'https://nwh.parceriacomia.com.br/webhook/receber-mensagem';
 const STORAGE_KEY = 'parceriaIA_chatHistory';
 const POLLING_INTERVAL = 2000;
 const MAX_POLLING_TIME = 120000; // Aumentado para 120 segundos
-const INITIAL_TIMEOUT = 10000; // Timeout de 10s para requisição inicial
+const INITIAL_TIMEOUT = 30000; // Timeout de 10s para requisição inicial
 
 interface WebhookResponse {
   status: 'pending' | 'completed';
