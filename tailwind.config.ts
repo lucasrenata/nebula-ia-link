@@ -1,3 +1,4 @@
+
 import type { Config } from "tailwindcss";
 
 export default {
@@ -18,6 +19,9 @@ export default {
 			}
 		},
 		extend: {
+			fontFamily: {
+				'inconsolata': ['Inconsolata', 'monospace'],
+			},
 			colors: {
 				border: 'hsl(var(--border))',
 				input: 'hsl(var(--input))',
@@ -61,6 +65,13 @@ export default {
 					'accent-foreground': 'hsl(var(--sidebar-accent-foreground))',
 					border: 'hsl(var(--sidebar-border))',
 					ring: 'hsl(var(--sidebar-ring))'
+				},
+				// Cores neon customizadas
+				neon: {
+					blue: '#00f7ff',
+					green: '#39ff14',
+					dark: '#0a0a14',
+					light: '#e0e0ff',
 				}
 			},
 			borderRadius: {
@@ -84,11 +95,22 @@ export default {
 					to: {
 						height: '0'
 					}
+				},
+				'rocket-launch': {
+					'0%': { transform: 'translateY(0) rotate(0)' },
+					'50%': { transform: 'translateY(-8px) rotate(5deg)' },
+					'100%': { transform: 'translateY(0) rotate(0)' }
+				},
+				'typing-dot': {
+					'0%, 80%, 100%': { transform: 'scale(0)' },
+					'40%': { transform: 'scale(1.0)' }
 				}
 			},
 			animation: {
 				'accordion-down': 'accordion-down 0.2s ease-out',
-				'accordion-up': 'accordion-up 0.2s ease-out'
+				'accordion-up': 'accordion-up 0.2s ease-out',
+				'rocket-launch': 'rocket-launch 0.5s ease-in-out',
+				'typing-dot': 'typing-dot 1.4s infinite ease-in-out both'
 			}
 		}
 	},
