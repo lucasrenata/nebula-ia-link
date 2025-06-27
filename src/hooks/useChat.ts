@@ -5,6 +5,8 @@ import { toast } from '@/hooks/use-toast';
 
 const WEBHOOK_URL = 'https://n8n.parceriacomia.com.br/webhook-test/receber-mensagem';
 const STORAGE_KEY = 'parceriaIA_chatHistory';
+const POLLING_INTERVAL = 2000; // 2 segundos
+const MAX_POLLING_TIME = 60000; // 60 segundos
 
 export const useChat = () => {
   const [state, setState] = useState<ChatState>({
@@ -56,6 +58,36 @@ export const useChat = () => {
     return newMessage;
   }, []);
 
+  const pollForResponse = useCallback(async (requestId: string): Promise<string> => {
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < MAX_POLLING_TIME) {
+      try {
+        const response = await fetch(`${WEBHOOK_URL}?requestId=${requestId}&action=poll`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.response && data.status === 'completed') {
+            return data.response;
+          }
+        }
+        
+        // Aguarda antes da próxima tentativa
+        await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL));
+      } catch (error) {
+        console.log('Polling attempt failed, retrying...', error);
+        await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL));
+      }
+    }
+    
+    throw new Error('Timeout: No response received within 60 seconds');
+  }, []);
+
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || state.isLoading) return;
 
@@ -69,47 +101,71 @@ export const useChat = () => {
     setState(prev => ({ ...prev, isLoading: true, error: null }));
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000);
-
-      const response = await fetch(WEBHOOK_URL, {
+      const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Enviar mensagem inicial
+      const initialResponse = await fetch(WEBHOOK_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           action: "send",
-          message: text
-        }),
-        signal: controller.signal
+          message: text,
+          requestId: requestId
+        })
       });
 
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`Erro na requisição: ${response.statusText}`);
+      if (!initialResponse.ok) {
+        throw new Error(`Erro na requisição inicial: ${initialResponse.statusText}`);
       }
 
-      const responseData = await response.json();
-      const aiResponse = responseData.response || 'Recebi sua mensagem, mas não pude processar uma resposta.';
+      // Fazer polling para aguardar a resposta
+      console.log(`Aguardando resposta do webhook para requestId: ${requestId}`);
+      
+      try {
+        const aiResponse = await pollForResponse(requestId);
+        
+        // Add AI response
+        addMessage({
+          text: aiResponse,
+          sender: 'ia',
+          timestamp: new Date().toISOString()
+        });
 
-      // Add AI response
-      addMessage({
-        text: aiResponse,
-        sender: 'ia',
-        timestamp: new Date().toISOString()
-      });
+      } catch (pollError) {
+        console.warn('Polling failed, trying direct response from initial request...');
+        
+        // Fallback: tentar obter resposta do response inicial
+        const initialData = await initialResponse.json().catch(() => ({}));
+        const fallbackResponse = initialData.response || 
+          `Sua mensagem foi recebida mas houve timeout na resposta. RequestId: ${requestId}. Por favor, tente novamente.`;
+        
+        addMessage({
+          text: fallbackResponse,
+          sender: 'ia',
+          timestamp: new Date().toISOString()
+        });
+
+        if (pollError instanceof Error && pollError.message.includes('Timeout')) {
+          toast({
+            title: "Timeout na Resposta",
+            description: "A IA demorou mais de 60 segundos para responder. A mensagem foi processada.",
+            variant: "destructive"
+          });
+        }
+      }
 
     } catch (error) {
       let errorMessage = '';
       let simulatedResponse = '';
 
-      if (error instanceof Error && error.name === 'AbortError') {
-        errorMessage = 'Tempo esgotado: O servidor demorou mais de 60s para responder.';
-        simulatedResponse = `(Simulação - Timeout) A resposta do servidor demorou mais de 60 segundos. Sua mensagem foi: "${text}"`;
+      if (error instanceof Error) {
+        errorMessage = `Erro de conexão: ${error.message}`;
+        simulatedResponse = `(Simulação - Erro de Conexão) Não foi possível conectar ao servidor. Erro: ${error.message}. Sua mensagem foi: "${text}"`;
       } else {
-        errorMessage = 'Erro de conexão. Verifique o CORS no servidor ou a rede.';
-        simulatedResponse = `(Simulação - Erro de Conexão) Não foi possível conectar ao servidor. Verifique o console (F12) para erros de CORS. Sua mensagem foi: "${text}"`;
+        errorMessage = 'Erro de conexão desconhecido.';
+        simulatedResponse = `(Simulação - Erro Desconhecido) Ocorreu um erro inesperado. Sua mensagem foi: "${text}"`;
       }
 
       toast({
@@ -131,7 +187,7 @@ export const useChat = () => {
     } finally {
       setState(prev => ({ ...prev, isLoading: false }));
     }
-  }, [state.isLoading, addMessage]);
+  }, [state.isLoading, addMessage, pollForResponse]);
 
   return {
     messages: state.messages,
